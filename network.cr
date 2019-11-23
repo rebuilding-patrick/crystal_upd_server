@@ -136,7 +136,7 @@ end#class
 
 
 class Server
-  property messages : EventPool(Packet)
+  property messages : PacketPool
   property clock : Clock
   property socket : UDPSocket
   property connections : Hash(Socket::IPAddress, Connection)
@@ -146,8 +146,8 @@ class Server
   #property connection : Connection
 
   def initialize(port : Int32)
-    @messages = EventPool(Packet).new
-    @clock = Clock.new 100
+    @messages = PacketPool.new 128
+    @clock = Clock.new 10_000
     @connections = Hash(Socket::IPAddress, Connection).new
     @socket = UDPSocket.new
     @port = port
@@ -175,8 +175,8 @@ class Server
         
     spawn do
       while @running
-        if @clock.check
-          puts "tick #{clock.time}"
+        if @clock.tick?
+          #puts "tick #{clock.time}"
           handle_outgoing
           #check_connections
         end
@@ -191,7 +191,7 @@ class Server
   end
 
   def handle_incoming(packet : Packet)
-    puts "Handling incoming"
+    incoming_callback packet
     if @connections.has_key? packet.host
       handle_data packet
     else
@@ -199,21 +199,33 @@ class Server
     end
   end
 
+  def incoming_callback(packet : Packet)
+    #puts "Handling incoming"
+  end
+
   def handle_join(packet : Packet)
     con = Connection.new packet.host
     @connections[packet.host] = con
     log packet
-    puts "Join from #{packet.host}"
+    join_callback packet
+  end
+
+  def join_callback(packet : Packet)
+    #puts "Join from #{packet.host}"
   end
 
   def handle_data(packet : Packet)
     #@messages.send packet
     log packet
-    puts "#{packet.data} recv from #{packet.host}"
+    data_callback packet
+  end
+
+  def data_callback(packet : Packet)
+    #puts "#{packet.data} recv from #{packet.host}"
   end
 
   def handle_outgoing
-    puts "Handling outgoing"
+    outgoing_callback
     sendall @clock.time.to_s
     #packet = @messages.receive?
     #while packet
@@ -223,20 +235,24 @@ class Server
     #end
   end
 
+  def outgoing_callback()
+    #puts "Handling outgoing"
+  end
+
   def send(packet : Packet)
-    puts "Sending"
+    puts "Sending #{packet.data}"
     @socket.send packet.data, packet.host
     #@connections[packet.host].send(packet)
   end
 
   def send(data : String, host : Socket::IPAddress)
-    puts "Sending"
+    puts "Sending #{data}"
     @socket.send data, host
     #@connections[host].send(data)
   end
 
   def sendall(data : String)
-    puts "Sending all"
+    puts "Sending all #{data}"
     @connections.each_value do |con|
       @socket.send data, con.host
       #connection.send(data, con.host)
