@@ -66,7 +66,7 @@ class Clock
     @time = 0_i64
   end
 
-  def tick : Int64
+  def tick! : Int64
     value = @ticker.get
     @value += value
     if @value > @rate
@@ -87,11 +87,11 @@ class Clock
     end
   end
   
-  def delta : Float64
+  def tick : Float64
     @value += @ticker.get
     if @value > @rate
       delta = (@value / @rate).to_f64
-      value = 0_i64
+      @value = 0_i64
       @time += 1
       delta
     else
