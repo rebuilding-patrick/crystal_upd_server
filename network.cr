@@ -1,9 +1,7 @@
 
 require "socket"
-
-require "./messenger"
 require "./clock"
-
+require "./messenger"
 
 struct Packet
   property host : Socket::IPAddress
@@ -79,8 +77,6 @@ class Connection
   property last :  Int64
   property warnings : Int16
 
-  #property socket : UDPSocket
-
   def initialize(address : String, port : Int32)
     @address = address
     @port = port
@@ -89,8 +85,6 @@ class Connection
     @history = PacketPool.new 200
     @last = 0
     @warnings = 0
-
-    #@socket = UDPSocket.new
   end
 
   def initialize(host : Socket::IPAddress)
@@ -101,8 +95,6 @@ class Connection
     @history = PacketPool.new 200
     @last = 0
     @warnings = 0
-
-    #@socket = UDPSocket.new
   end
 
   def log(packet : Packet, time : Int64)
@@ -121,269 +113,58 @@ class Connection
 end#class
 
 
-class Client
-  property incoming : Messenger(Packet)
-  property outgoing : Messenger(Packet)
-  property connection : Connection | Nil
-  property clock : Clock
+class Network
   property socket : UDPSocket
-  property running : Bool
-
-  def initialize
-    @incoming = Messenger(Packet).new
-    @outgoing = Messenger(Packet).new
-    @connection = nil
-    @clock = Clock.new 10_000
-    @socket = UDPSocket.new
-    @running = false
-  end
-
-  def connect(address : String, port : Int32)
-    @connection = Connection.new address, port
-  end
-
-  def connect(host : Tuple(String, Int32))
-    @connection = Connection.new host[0], host[1]
-  end
-
-  def connect(host : Socket::IPAddress)
-    @connection = Conneciton.new host.address, host.port
-  end
-
-  def run
-    puts "Client: Waiting for data"
-    @running = true
-
-    spawn do
-      while @running
-        packet = Packet.new @socket.receive
-        _handle_incoming packet
-
-        Fiber.yield
-      end
-    end
-        
-    spawn do
-      while @running
-        if @clock.tick?
-          _handle_outgoing
-        end
-
-        Fiber.yield
-      end
-    end
-  end
-
-  def _handle_input(packet : Packet)
-    @incoming.send packet
-    handle_input packet
-  end
-
-  def handle_input(packet : Packet)
-    puts "Input: #{packet.data}"
-  end
-
-  def _handle_output(outgoing : Array(Packet))
-    outgoing.each do |packet|
-      send packet
-    end
-    handle_output outgoing
-  end
-
-  def handle_output(outgoing)
-   puts "Output: #{outgoing}"
-  end
-  
-  def send(packet)
-    @connection.log packet, @clock.time
-    @socket.send packet.data, packet.host
-  end
-
-  def send(self, data)
-    @connection.log packet, @clock.time
-    @socket.send data, @connection.host
-  end
-
-end#class
-
-
-class Server
-  #TODO add a banned list
-  #TODO add a callback for sending
-  #TODO handle parting clients
-  property joining : Messenger(Packet)
-  property incoming : Messenger(Packet)
-  property outgoing : Messenger(Packet)
-  property messages : PacketPool
-  property clock : Clock
-  property socket : UDPSocket
+  property connection : Connection
   property connections : Hash(Socket::IPAddress, Connection)
-  property port : Int32
-  property password : String
-  property running_out : Bool
-  property running_in : Bool
+  property clock : Clock
 
-  def initialize(port : Int32, password : String)
-    @joining = Messenger(Packet).new
-    @incoming = Messenger(Packet).new
-    @outgoing = Messenger(Packet).new
-    
-    @messages = PacketPool.new 128
-    @clock = Clock.new 10_000
-    @connections = Hash(Socket::IPAddress, Connection).new
+  def initialize(address : String, port : Int32, clock : Clock)
     @socket = UDPSocket.new
-    @port = port
-    @password = password
-    @running_in = false
-    @running_out = false
-
+    @connection = Connection.new address, port
+    @connections = Hash(Socket::IPAddress, Connection).new
+    @clock = clock
   end
 
-  def start
-    connect
-    start_in
-    start_out
-  end
-
-  def start_input
-    @running_in = true
-    spawn do
-      while @running_in
-        _handle_incoming
-        Fiber.yield
-      end
-    end
-  end
-
-  def start_output
-    @running_out = true
-    spawn do
-      while @running_out
-        if @clock.tick?
-          _handle_outgoing
-        end
-        Fiber.yield
-      end
-    end
-  end
-
-  def stop
-    @running_in = false
-    @running_out = false
-  end
-
-  def connect
+  def bind
     begin
-      puts "Server starting on 127.0.0.1:#{@port}"
-      @socket.bind("127.0.0.1", port)
-      @running = true 
-    rescue err
-      puts err.message
-      return false
-    end
-  end
-
-  def _handle_incoming
-    packet = Packet.new @socket.receive
-    handle_incoming packet
-    if @connections.has_key? packet.host
-      _handle_data packet
-    else
-      _handle_join packet
-    end
-  end
-
-  #Callback function to be overridden
-  def handle_incoming(packet : Packet)
-    puts "Handling incoming"
-  end
-
-  def _handle_join(packet : Packet)
-    begin
-      if packet.data == @password
-        con = Connection.new packet.host
-        @connections[packet.host] = con
-        @joining.send packet
-        log packet
-        handle_join packet
-      else
-        _handle_reject packet
-      end
+      puts "Server: Starting on #{@connection.host_name}"
+      @socket.bind @connection.host
     rescue err
       puts err.message
     end
   end
 
-  def _handle_reject(packet : Packet)
-    handle_reject packet
-  end
-
-  #Callback function to be overridden
-  def handle_join(packet : Packet)
-    puts "Join from #{packet.host}"
-  end
-
-  #Callback function to be overrideen
-  def handle_reject(packet : Packet)
-    puts "Join rejected from #{packet.host}"
-
-  end 
-
-  def _handle_data(packet : Packet)
+  def recv
     begin
-      @incoming.send packet
+      puts "Server: recv"
+      packet = Packet.new @socket.receive
       log packet
-      handle_data packet
+      return packet
     rescue err
       puts err.message
     end
-  end
-
-  #Callback function to be overridden
-  def handle_data(packet : Packet)
-    puts "#{packet.data} recv from #{packet.host}"
-  end
-
-  def _handle_outgoing
-    begin
-      outgoing = @outgoing.get
-      handle_outgoing outgoing
-      outgoing.each do |packet|
-        send packet
-      end
-    rescue err
-      puts err.message
-    end
-  end
-
-  def handle_outgoing(outgoing : Array(Packet))
-    #puts "Handling outgoing #{@clock.time}"
   end
 
   def send(packet : Packet)
     begin
-      puts "Sending #{packet.data}"
+      puts "Server: Sending #{packet.data}"
       @socket.send packet.data, packet.host
+      @connection.log packet, @clock.time
     rescue err
       puts err.message
     end
   end
 
   def send(data : String, host : Socket::IPAddress)
-    begin
-      puts "Sending #{data}"
-      @socket.send data, host
-    rescue err
-      puts err.message
-    end
+    packet = Packet.new data, host
+    send packet
   end
 
   def sendall(data : String)
-    puts "Sending all #{data}"
+    puts "Server: Sending all #{data}"
     @connections.each_value do |con|
       send data, con.host
-      #connection.send(data, con.host)
-      #@connection.send(data, connection.host)
     end
   end
 
@@ -392,15 +173,22 @@ class Server
   end
 
   def log(packet : Packet)
+    if @connections.has_key? packet.host
+      @connections[packet.host].log packet, @clock.time
+    else
+      @connections[packet.host] = Connection.new packet.host
+    end
+  end
+
+  def log!(packet : Packet)
     @connections[packet.host].log packet, @clock.time
   end
 
   def check_connections
     puts "Server: Checking connections"
     dead = Array(Socket::IPAddress).new
-    time = @clock.time
     @connections.each_value do |con|
-      warnings = con.check time
+      warnings = con.check @clock.time
       if warnings > 2
         puts "Server: #{con.host} has timed out"
         dead << con.host
@@ -416,3 +204,118 @@ class Server
 
 end#class
 
+
+class Server
+  property input : Messenger(Packet)
+  property output : Messenger(Packet)
+  property network : Network
+  property clock : Clock
+
+  def initialize
+    @input = Messenger(Packet).new
+    @output = Messenger(Packet).new
+    @clock = Clock.new 1000
+    @network = Network.new "127.0.0.1", 45456, @clock
+  end
+
+  def start
+    @server.bind
+
+    spawn do
+      while true
+        get_input
+        Fiber.yield
+      end
+    end
+
+    spawn do
+      while true
+        delta = @clock.tick
+        if delta > 0.0
+          handle_input 
+          handle_output
+        end
+        Fiber.yield
+      end
+    end
+  end
+
+  def get_input
+    packet = @network.recv
+    if packet
+      @input.send packet
+    end
+  end
+
+  def handle_input
+    packets = @input.get
+    packets.each do |packet|
+      @outgoing.send packet
+    end
+  end
+
+  def handle_output
+    packets = @output.get
+    packets.each do |packet|
+      @network.send packet
+    end
+  end
+
+end#class
+
+
+class Client
+  property input : Messenger(Packet)
+  property output : Messenger(Packet)
+  property network : Network
+  property clock : Clock
+
+  def initialize
+    @input = Messenger(Packet).new
+    @output = Messenger(Packet).new
+    @clock = Clock.new 1000
+    @network = Network.new "127.0.0.1", 45456, @clock
+  end
+
+  def start
+    spawn do
+      while true
+        get_input
+        Fiber.yield
+      end
+    end
+
+    spawn do
+      while true
+        delta = @clock.tick
+        if delta > 0.0
+          handle_input 
+          handle_output
+        end
+        Fiber.yield
+      end
+    end
+  end
+
+  def get_input
+    packet = @network.recv
+    if packet
+      @input.send packet
+    end
+  end
+
+  def handle_input
+    packets = @input.get
+    packets.each do |packet|
+      @outgoing.send packet
+    end
+  end
+
+  def handle_output
+    packets = @output.get
+    packets.each do |packet|
+      @network.send packet
+    end
+  end
+
+end#class
