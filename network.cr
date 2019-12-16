@@ -1,8 +1,10 @@
 
 require "socket"
 require "./physicr/clock"
-require "./messenger"
 
+require "./messenger" #This is for the client and server classes not the network component.
+
+CONFIRM = "99"
 
 PLAYER_IDENT = "0"
 PLAYER_POS = "1"
@@ -13,58 +15,59 @@ PLAYER_LEVEL = "5"
 
 SERVER_IDENT = "50"
 SERVER_POS = "51"
-SERVER_PING = "52"
-SERVER_LEVEL = "53"
-SERVER_BLOCK = "54"
+SERVER_PING = "52" #This isn't being used due to constant communication. Remove?
+SERVER_LEVEL = "53" #This is new level information
+SERVER_BLOCK = "54" #This is block change information, usually from other players
 SERVER_NEW_ACTOR = "55"
 SERVER_DEL_ACTOR = "56"
 SERVER_MSG = "57"
 SERVER_KICK = "58"
-SERVER_LEVEL_END = "59" 
+SERVER_LEVEL_END = "59"
 
 #eg b"1/150/100/join/0"
-# 0 = time
-# join = command
-# 150/100/1 = args
+# item[-1] 0 = time
+# item[-2] join = command
+# item[0] 150/100/1 = args
 
-
-#Not used, skipping in favor of using a message directly.
-#Keeping around for general usage.
 struct Packet
   property host : Socket::IPAddress
   property data : String
 
-  def initialize(data : String, host : String, port : Int32)
-    @data = data
-    @host = Socket::IPAddress.new host, port
+  def initialize(@host, @data)
   end
+end
 
-  def initialize(data : String, host : Socket::IPAddress)
-    @data = data
-    @host = host
-  end
 
-  def initialize(data : Tuple(String, Socket::IPAddress))
-    @data = data[0]
-    @host = data[1]
+struct Message
+  property host : Socket::IPAddress
+  property data : String
+
+  property time : Int64
+  property index : Int32
+  property command : String
+  property args : Array(String)
+
+  def initialize(@host, @data, @time, @index, @command, @args)
   end
 end#struct
 
 
-#Not used right now
-class PacketPool
+class MessagePool
   property size : Int32
   property index : Int32
-  property pool : Array(Packet)
+  property pool : Array(Message)
 
   def initialize(size : Int32)
     @size = size
     @index = -1
-    @pool = Array(Packet).new
-        
-    null_packet = Packet.new("null", "0.0.0.0", 0)
+    @pool = Array(Message).new
+    
+    null_ip = Socket::IPAddress.new("0.0.0.0", 0)
+    null_args = Array(String).new
+    null_msg = Message.new(null_ip, "null", -1_i64, 0, "null", null_args)
+
     size.times do |i|
-      @pool << null_packet
+      @pool << null_msg
     end
   end
 
@@ -75,36 +78,23 @@ class PacketPool
     end      
   end
     
-  def get(index : Int32) : Packet
+  def get(index : Int32) : Message
     @pool[index]
   end
 
-  def get : Packet
+  def get : Message
     @pool[@index]
   end
 
-  def set(index : Int32, packet : Packet)
-    @pool[index] = packet
+  def set(index : Int32, message : Message)
+    @pool[index] = message
   end
 
-  def add(packet : Packet)
+  def add(message : Message)
     advance
-    @pool[@index] = packet
+    @pool[@index] = message
   end
 end#class
-
-
-struct Message
-  property host : Socket::IPAddress
-  property data : String
-
-  property time : Int64
-  property command : String
-  property args : Array(String)
-
-  def initialize(@host, @data, @time, @command, @args)
-  end
-end#struct
 
 
 class Parser
@@ -112,19 +102,24 @@ class Parser
     @clock = clock
     @delimiter = "/"
     host = Socket::IPAddress.new "127.0.0.1", 0
-    @bad_message = Message.new(host, "bad message", 0_i64, "-999", Array(String).new)
+    @bad_message = Message.new(host, "bad message", 0_i64, 0, "-999", Array(String).new)
   end 
 
   def encode(command : String, data : String) : String
-    return "#{data}/#{command}/#{@clock.time}"
+    return "#{data}/#{command}/0/#{@clock.time}"
+  end
+
+  def encode(command : String, data : String, index : Int32) : String
+    return "#{data}/#{command}#{index}#{clock.time}"
   end
 
   def decode(packet : Tuple(String, Socket::IPAddress)) : Message
     begin
       data = packet[0].split @delimiter
       time = data.pop.to_i64
+      index = data.pop.to_i32
       command = data.pop
-      return Message.new packet[1], packet[0], time, command, data
+      return Message.new packet[1], packet[0], time, index, command, data
     rescue err
       puts "Network: Error parsing packet #{packet[0]} from #{packet[1]} - #{err.message}"
       return @bad_message
@@ -139,7 +134,7 @@ class Connection
   property port : Int32
   property host_name : String
   property host : Socket::IPAddress
-  #property history : PacketPool
+  property history : MessagePool
   property last :  Int64
   property warnings : Int16
 
@@ -148,7 +143,7 @@ class Connection
     @port = port
     @host_name = "#{address}:#{port}"
     @host = Socket::IPAddress.new address, port
-    #@history = PacketPool.new 200
+    @history = MessagePool.new 200
     @last = 0
     @warnings = 0
   end
@@ -158,21 +153,25 @@ class Connection
     @port = host.port
     @host_name = "#{host.address}:#{host.port}"
     @host = Socket::IPAddress.new host.address, host.port
-    #@history = PacketPool.new 200
+    @history = MessagePool.new 200
     @last = 0
     @warnings = 0
   end
 
-  # def log(packet : Packet, time : Int64)
-  #   @history.add packet
-  #   @last = time
-  # end
+  def log(message : Message)
+    @history.add message
+    @last = message.time
+  end
 
-  def check(time : Int64) : Int16
-    if time - @last > 10
+  def check(time : Int64) 
+    #puts "Connection: Checking connection #{time} - #{@last}, (#{time - @last}) (#{time - @last}) > 5})"
+    if time - @last > 5
       @warnings += 1
+      puts "Warning #{@warnings}..."
+      return @warnings
     else
       @warnings = 0
+      return @warnings
     end
   end
         
@@ -185,6 +184,8 @@ class Network
   property connection : Connection
   property connections : Hash(Socket::IPAddress, Connection)
   property clock : Clock
+  property resending : Hash(Int32, Packet)
+  property index : Int32
 
   def initialize(address : String, port : Int32, clock : Clock)
     @socket = UDPSocket.new
@@ -192,6 +193,9 @@ class Network
     @connection = Connection.new address, port
     @connections = Hash(Socket::IPAddress, Connection).new
     @clock = clock
+
+    @resending = Hash(Int32, Packet).new
+    @index = 0
   end
 
   def bind
@@ -204,7 +208,13 @@ class Network
   end
 
   def recv : Message
-    return @parser.decode @socket.receive
+    message = @parser.decode @socket.receive
+    if message.index > 0
+      if @resending.has_key? message.index
+        @resending.delete message.index
+      end
+    end
+    return message
   end
 
   def send(data : String, host : Socket::IPAddress)
@@ -216,19 +226,14 @@ class Network
     end
   end
 
-  def send(command : String, data : String, host : Socket::IPAddress)
-    begin
-      msg = @parser.encode command, data
-      #puts "Server: Sending #{msg} to #{host}"
-      @socket.send msg, host
-    rescue err
-      puts "Server: Error sending #{data} : #{err.message}"
-    end
+  def promise(command : String, data : String, host : Socket::IPAddress)
+    @index += 1
+    @resending[@index] = Packet.new host, @parser.encode(command, data, @index)
   end
 
-  def sendall(command : String, data : String)
+  def send(command : String, data : String, host : Socket::IPAddress)
     msg = @parser.encode command, data
-    sendall msg
+    send msg, host
   end
 
   def sendall(data : String)
@@ -238,35 +243,16 @@ class Network
     end
   end
 
-  # def log(packet : Packet)
-  #   if @connections.has_key? packet.host
-  #     @connections[packet.host].log packet, @clock.time
-  #   else
-  #     @connections[packet.host] = Connection.new packet.host
-  #   end
-  # end
+  def sendall(command : String, data : String)
+    msg = @parser.encode command, data
+    sendall msg
+  end
 
-  # def log!(packet : Packet)
-  #   @connections[packet.host].log packet, @clock.time
-  # end
-
-  def check_connections
-    puts "Server: Checking connections"
-    dead = Array(Socket::IPAddress).new
-    @connections.each_value do |con|
-      warnings = con.check @clock.time
-      if warnings > 2
-        puts "Server: #{con.host} has timed out"
-        dead << con.host
-      elsif warnings > 0
-        puts "Server: Timeout warning for #{con.host}"
-      end
+  def resend
+    @resending.each_value do |packet|
+      send packet.data, packet.host
     end
-
-    dead.each do |host|
-      @connections.delete host
-    end
-  end 
+  end
 
 end#class
 
